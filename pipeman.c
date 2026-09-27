@@ -9,8 +9,10 @@ int due_in[4];
 
 struct report {
     char name[50];
-    char input[300];
+    char **input;
+    int input_count;
     char output[300];
+    int output_count;
     char script[300];
     char **dependencies;
     size_t dependency_count;
@@ -103,10 +105,6 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
             for (yaml_node_pair_t *pipeline_pair = value->data.mapping.pairs.start; pipeline_pair < value->data.mapping.pairs.top; pipeline_pair++) {
                 yaml_node_t *pipeline_name = yaml_document_get_node(&document, pipeline_pair->key);
                 yaml_node_t *pipeline_data = yaml_document_get_node(&document, pipeline_pair->value);
-                // if (n >= 100) {
-                //     printf("Too many pipelines\n");
-                //     break;
-                // }
 
                 if (pipeline_name->type == YAML_SCALAR_NODE) {
                     (*reports_count)++;
@@ -117,7 +115,18 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                             yaml_node_t *field_value = yaml_document_get_node(&document, data_pair->value);
                             char *name = (char *)field_name->data.scalar.value;
                             if (strcmp(name, "input") == 0) {
-                                snprintf((*pipelines)[n].input, sizeof((*pipelines)[n].input), "%s", field_value->data.scalar.value);
+                                int input_count = field_value->data.sequence.items.top - field_value->data.sequence.items.start;
+                                (*pipelines)[n].input = malloc(input_count * sizeof *(*pipelines)[n].input);
+                                (*pipelines)[n].input_count = input_count;
+                                int b = 0;
+                                for (yaml_node_item_t *item = field_value->data.sequence.items.start; item < field_value->data.sequence.items.top; item++) {
+                                    yaml_node_t *input = yaml_document_get_node(&document, *item);
+                                    const char *inp = (const char *)input->data.scalar.value;
+                                    (*pipelines)[n].input[b] = malloc(strlen(inp) + 1);
+                                    strcpy((*pipelines)[n].input[b], inp);
+                                    b++;
+                                }
+                                // snprintf((*pipelines)[n].input, sizeof((*pipelines)[n].input), "%s", field_value->data.scalar.value);
                             } else if (strcmp(name, "output") == 0) {
                                 snprintf((*pipelines)[n].output, sizeof((*pipelines)[n].output), "%s", field_value->data.scalar.value);
                             } else if (strcmp(name, "script") == 0) {
@@ -132,10 +141,6 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                                 size_t dependency_count = field_value->data.sequence.items.top - field_value->data.sequence.items.start;
                                 printf("dependency count %zu\n", dependency_count);
                                 (*pipelines)[n].dependencies = malloc(dependency_count * sizeof *(*pipelines)[n].dependencies);
-                                // if (dependency_count >= 20) {
-                                //         printf("Too many dependencies for report %s\n", pipelines[n].name);
-                                //         return 1;
-                                //     }
                                 (*pipelines)[n].dependency_count = dependency_count;
                                 int m = 0;
                                 for (yaml_node_item_t *item = field_value->data.sequence.items.start; item < field_value->data.sequence.items.top; item++) {
@@ -181,7 +186,7 @@ struct tm get_due_day(struct tm due, int wd) {
     int requested_dow = due.tm_wday;
     int dow_specified = (requested_dow != -1); // -1 = unspecified
 
-    // -1 for unspecified month because for c 0 == Jan
+    // -1 for unspecified month because 0 == Jan
     due.tm_year = local->tm_year;
     if (due.tm_mon != -1) {
         if ((dif = (due.tm_mon - local->tm_mon)) < 0) {
@@ -231,8 +236,7 @@ struct tm get_due_day(struct tm due, int wd) {
     if (wd == 1) {
         int outcome = 2 * due.tm_mday / 7;
         int rest = due.tm_mday % 7;
-        // int outcome = 2 * whole;
-        printf("wday %d\n", due.tm_wday);
+        // printf("wday %d\n", due.tm_wday);
         int weekd_first_monthd = due.tm_wday - rest + 1;
         for (i = 1; i <= rest; i++, weekd_first_monthd++) {
             if (weekd_first_monthd % 7 == 0 || weekd_first_monthd % 7 == 6) {
@@ -283,21 +287,12 @@ int get_date(char *date, struct report *report, struct tm *out_due_date) {
         } else {
             switch (count) {
                 case 0:
-                    // if (strcmp(buffer, "*") == 0) {
-                    //     strcpy(buffer, "0");
-                    // }
                     due_date.tm_min = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10); // In struct tm minutes range 0-59
                     break;
                 case 1:
-                    // if (strcmp(buffer, "*") == 0) {
-                    //     strcpy(buffer, "0");
-                    // }
                     due_date.tm_hour = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10); // In struct tm hours range 0-23
                     break;
                 case 2:
-                    // if (strcmp(buffer, "*") == 0) {
-                    //     strcpy(buffer, "0");
-                    // }
                     due_date.tm_mday = (strcmp(buffer, "*") == 0) ? 0 : (int)strtol(buffer, NULL, 10); // 1-31
                     break;
                 case 3:
@@ -308,9 +303,6 @@ int get_date(char *date, struct report *report, struct tm *out_due_date) {
                     due_date.tm_mon = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10) - 1; //Accounting for c cron format incompatibility
                     break;
                 case 4:
-                    // if (strcmp(buffer, "*") == 0) {
-                    //     strcpy(buffer, "-1");
-                    // }
                     due_date.tm_wday = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10); // 0-6
                     break;
             }
