@@ -1,14 +1,19 @@
 # Daty używają formatu cron (minuta godzina dzień-miesiąca miesiąc dzień-tygodnia) plus ewentualnie są poprzedzone wd i spacją, by zaznaczyć dzień pracujący,
 # np. wd 0 23 2 0 0 oznacza godzinę 23 w każdy drugi pracujący dzień miesiąca tzw. wd+2. Dzień tygodnia przyjmuje wartości 0-6, gdzie 0 to Niedziela, a 6 to Sobota.
 pipelines:
+
   list_files:
-    input: ~/
+    input: 
+      - ~/plik.csv
+      - ~/Dekstop/raport.json
     output: ~/Desktop
     script: ~/list.exe
     dependencies: []
     due: wd * * 3 * *
+
   do_something_else:
-    input: ~/Donwloads
+    input:
+      - ~/Donwloads/inny_plik.xlsx
     output: ~/Desktop
     script: ~/do_something_else.exe
     dependencies:
