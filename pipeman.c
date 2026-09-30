@@ -5,17 +5,18 @@
 #include <yaml.h>
 #include <time.h>
 #include <ctype.h>
-int due_in[4];
 
+int due_in[4];
+struct list {
+    char **items;
+    size_t count;
+};
 struct report {
     char name[50];
-    char **input;
-    int input_count;
-    char output[300];
-    int output_count;
+    struct list input;
+    struct list output;
     char script[300];
-    char **dependencies;
-    size_t dependency_count;
+    struct list dependencies;
     struct tm due;
     struct tm due_day;
     int due_in[4];
@@ -40,7 +41,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    printf("Number of reports overall: %d\n", reports_count);
+    printf("\nNumber of reports overall: %d\n", reports_count);
     for (k = 0; k < reports_count; k++) {
         print_pipeline(&pipelines[k]);
     }
@@ -65,16 +66,58 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+void free_list(struct list *collection) {
+    for (size_t i = 0; i < collection->count; i++) {
+        free(collection->items[i]);
+    }
+    free(collection->items);
+    collection->items = NULL;
+    collection->count = 0;
+}
 void free_reports(struct report *reports, size_t n) {
     for (size_t i = 0; i < n; i++) {
-        for (size_t j = 0; j < reports[i].dependency_count; j++) {
-            free(reports[i].dependencies[j]);
-        }
-        free(reports[i].dependencies);
+        free_list(&reports[i].input);
+        free_list(&reports[i].output);
+        free_list(&reports[i].dependencies);
     }
     free(reports);
 }
 
+int get_list(struct list *collection, yaml_document_t *document, yaml_node_t *field_value) {
+    if (field_value->type != YAML_SEQUENCE_NODE) {
+        return 1;
+    }
+    size_t items_count = field_value->data.sequence.items.top - field_value->data.sequence.items.start;
+    collection->items = malloc(items_count * sizeof *collection->items);
+    if (collection->items == NULL && items_count > 0) {
+        return 1;
+    }
+    collection->count = items_count;
+    size_t b = 0;
+    for (yaml_node_item_t *item = field_value->data.sequence.items.start; item < field_value->data.sequence.items.top; item++) {
+        yaml_node_t *thing = yaml_document_get_node(document, *item);
+        if (thing == NULL || thing->type != YAML_SCALAR_NODE) {
+            goto error;
+        }
+        const char *inp = (const char *)thing->data.scalar.value;
+        collection->items[b] = malloc(strlen(inp) + 1);
+        if (collection->items[b] == NULL) {
+            goto error;
+        }
+        strcpy(collection->items[b], inp);
+        b++;
+    }
+    return 0;
+
+    error:
+    for (size_t i = 0; i < b; i++) {
+        free(collection->items[i]);
+    }
+    free(collection->items);
+    collection->count = 0;
+    collection->items = NULL;
+    return 1;
+}
 int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count) {
     yaml_parser_t parser;
     yaml_document_t document;
@@ -89,7 +132,6 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
         return 1;
     }
     yaml_parser_set_input_file(&parser, fp);
-
     yaml_parser_load(&parser, &document);
 
     yaml_node_t *root = yaml_document_get_root_node(&document);
@@ -100,7 +142,6 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
         if (key->type == YAML_SCALAR_NODE && strcmp((char *)key->data.scalar.value, "pipelines") == 0 && value->type == YAML_MAPPING_NODE) {
             size_t n_pipelines = value->data.mapping.pairs.top - value->data.mapping.pairs.start;
             *pipelines = calloc(n_pipelines, sizeof **pipelines);
-            // printf("top %zu\n", n_pipelines);
             int n = 0;
             for (yaml_node_pair_t *pipeline_pair = value->data.mapping.pairs.start; pipeline_pair < value->data.mapping.pairs.top; pipeline_pair++) {
                 yaml_node_t *pipeline_name = yaml_document_get_node(&document, pipeline_pair->key);
@@ -115,20 +156,11 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                             yaml_node_t *field_value = yaml_document_get_node(&document, data_pair->value);
                             char *name = (char *)field_name->data.scalar.value;
                             if (strcmp(name, "input") == 0) {
-                                int input_count = field_value->data.sequence.items.top - field_value->data.sequence.items.start;
-                                (*pipelines)[n].input = malloc(input_count * sizeof *(*pipelines)[n].input);
-                                (*pipelines)[n].input_count = input_count;
-                                int b = 0;
-                                for (yaml_node_item_t *item = field_value->data.sequence.items.start; item < field_value->data.sequence.items.top; item++) {
-                                    yaml_node_t *input = yaml_document_get_node(&document, *item);
-                                    const char *inp = (const char *)input->data.scalar.value;
-                                    (*pipelines)[n].input[b] = malloc(strlen(inp) + 1);
-                                    strcpy((*pipelines)[n].input[b], inp);
-                                    b++;
+                                if (get_list(&(*pipelines)[n].input, &document, field_value) != 0) {
+                                    return 1;
                                 }
-                                // snprintf((*pipelines)[n].input, sizeof((*pipelines)[n].input), "%s", field_value->data.scalar.value);
                             } else if (strcmp(name, "output") == 0) {
-                                snprintf((*pipelines)[n].output, sizeof((*pipelines)[n].output), "%s", field_value->data.scalar.value);
+                                if (get_list(&(*pipelines)[n].output, &document, field_value));
                             } else if (strcmp(name, "script") == 0) {
                                 snprintf((*pipelines)[n].script, sizeof((*pipelines)[n].script), "%s", field_value->data.scalar.value);
                             } else if (strcmp(name, "due") == 0) {
@@ -138,22 +170,8 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                                 }
                                 (*pipelines)[n].due = due;
                             } else if (strcmp(name, "dependencies") == 0) {
-                                size_t dependency_count = field_value->data.sequence.items.top - field_value->data.sequence.items.start;
-                                printf("dependency count %zu\n", dependency_count);
-                                (*pipelines)[n].dependencies = malloc(dependency_count * sizeof *(*pipelines)[n].dependencies);
-                                (*pipelines)[n].dependency_count = dependency_count;
-                                int m = 0;
-                                for (yaml_node_item_t *item = field_value->data.sequence.items.start; item < field_value->data.sequence.items.top; item++) {
-                                    yaml_node_t *dependency = yaml_document_get_node(&document, *item);
-                                    const char *dep = (const char *)dependency->data.scalar.value;
-                                     (*pipelines)[n].dependencies[m] = malloc(strlen(dep) + 1);
-                                         if ((*pipelines)[n].dependencies[m] == NULL) {
-                                            printf("%s\n", "Error allocating memory");
-                                            return 1;
-                                        }
-                                     strcpy((*pipelines)[n].dependencies[m], dep);
-                                    // snprintf(pipelines[n].dependencies[m], sizeof(pipelines[n].dependencies[m]), "%s", dependency->data.scalar.value);
-                                    m++;
+                                if (get_list(&(*pipelines)[n].dependencies, &document, field_value) != 0) {
+                                    return 1;
                                 }
                             }
                         }
@@ -222,7 +240,6 @@ struct tm get_due_day(struct tm due, int wd) {
             }
         }
     }
-
 
     // print_date(due);
     // print_date(*local);
@@ -332,6 +349,20 @@ void change_minus_one_to_stars(char *cron) {
         i++;
     }
 }
+void print_list (struct list collection, char *name) {
+    printf("%s:", name);
+    if (collection.count > 0) {
+        printf(" %s\n", collection.items[0]);
+        for (size_t j = 1; j < collection.count; j++) {
+            for (int i = 0; i < strlen(name); i++) {
+                putchar(' ');
+            }
+            printf("%s\n", collection.items[j]);
+        }
+    } else {
+        printf("\n");
+    }
+}
 void print_pipeline(struct report *p) {
     char due_print[20];
     char due_day_print[20];
@@ -339,26 +370,10 @@ void print_pipeline(struct report *p) {
     change_minus_one_to_stars(due_print);
     strftime(due_day_print, 20, "%d.%m.%Y %H:%M", &p->due_day);
     printf("\nname: %s\n", p->name);
-    printf("output: %s\n", p->output);
+    print_list(p->output, "output");
     printf("script: %s\n", p->script);
-    printf("dependencies:");
-    if (p->dependency_count > 0) {
-        printf(" %s\n", p->dependencies[0]);
-        for (size_t j = 1; j < p->dependency_count; j++) {
-            printf("             %s\n", p->dependencies[j]);
-        }
-    } else {
-        printf("\n");
-    }
-    printf("input:");
-    if (p->input_count > 0) {
-        printf(" %s\n", p->input[0]);
-        for (int g = 1; g < p->input_count; g++) {
-            printf("       %s\n", p->input[g]);
-        }
-    } else {
-        printf("\n");
-    }
+    print_list(p->dependencies, "dependencies");
+    print_list(p->input, "input");
     printf("due: %s\n", due_print);
     printf("due day: %s\n", due_day_print);
 }

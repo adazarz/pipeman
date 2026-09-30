@@ -6,7 +6,8 @@ pipelines:
     input: 
       - ~/plik.csv
       - ~/Dekstop/raport.json
-    output: ~/Desktop
+    output:
+      - ~/Desktop
     script: ~/list.exe
     dependencies: []
     due: wd * * 3 * *
@@ -14,7 +15,8 @@ pipelines:
   do_something_else:
     input:
       - ~/Donwloads/inny_plik.xlsx
-    output: ~/Desktop
+    output:
+      - ~/Desktop
     script: ~/do_something_else.exe
     dependencies:
       - list_files
