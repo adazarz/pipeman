@@ -5,8 +5,12 @@
 #include <yaml.h>
 #include <time.h>
 #include <ctype.h>
+#include <curl/curl.h>
+#include "cJSON.h"
 
+const struct tm *local = localtime(&now);
 int due_in[4];
+
 struct list {
     char **items;
     size_t count;
@@ -22,21 +26,23 @@ struct report {
     int due_in[4];
 };
 
-int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count);
+int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api);
 void print_pipeline(struct report *p);
 int get_date(char *date, struct report *report, struct tm *out_due_date);
 struct tm get_due_day(struct tm due, int wd);
 void print_date(struct tm date);
 void free_reports(struct report *reports, size_t n);
+int get_holidays (char *api, const char *country, const int year);
 
 int main(int argc, char *argv[]) {
     size_t reports_count = 0;
     char reports[4096];
     struct report *pipelines = NULL;
     int k;
+    char *api = NULL;
 
     get_yaml(reports, sizeof(reports));
-    if (get_reports_from_yaml(reports, &pipelines, &reports_count) != 0) {
+    if (get_reports_from_yaml(reports, &pipelines, &reports_count, &api) != 0) {
         free_reports(pipelines, reports_count);
         return 1;
     }
@@ -59,10 +65,13 @@ int main(int argc, char *argv[]) {
             //Run implementation
         } else if (strcmp(argv[1], "execute") == 0) {
             //Execute implementation
+        } else if (strcmp(argv[1], "holidays") == 0) {
+            get_holidays("https://date.nager.at/api/v3/PublicHolidays/%d/%s", "PL", 2026);
         }
     }
 
     free_reports(pipelines, reports_count);
+    free(api);
     return 0;
 }
 
@@ -118,7 +127,7 @@ int get_list(struct list *collection, yaml_document_t *document, yaml_node_t *fi
     collection->items = NULL;
     return 1;
 }
-int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count) {
+int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api) {
     yaml_parser_t parser;
     yaml_document_t document;
     if (yaml_parser_initialize(&parser) == 0) {
@@ -139,6 +148,22 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
         yaml_node_t *key = yaml_document_get_node(&document, pair->key);
         yaml_node_t *value = yaml_document_get_node(&document, pair->value);
 
+        if (key->type ==YAML_SCALAR_NODE && strcmp((char *)key->data.scalar.value, "holidays") == 0 && value->type == YAML_MAPPING_NODE) {
+            for (yaml_node_pair_t *holidays_pair = value->data.mapping.pairs.start; holidays_pair < value->data.mapping.pairs.top; holidays_pair++) {
+                yaml_node_t *holidays_element = yaml_document_get_node(&document, holidays_pair->key);
+                yaml_node_t *holidays_element_value = yaml_document_get_node(&document, holidays_pair->value);
+                printf("%s\n", holidays_element->data.scalar.value);
+                if (holidays_element_value->type == YAML_SCALAR_NODE && holidays_element->type == YAML_SCALAR_NODE && strcmp(holidays_element->data.scalar.value, "api") == 0) {
+                    *api = malloc(strlen((char *)holidays_element_value->data.scalar.value) + 1);
+                    if (*api == NULL) {
+                        printf("Error allocating memory\n");
+                        return 1;
+                    }
+                    snprintf(*api, strlen((char *)holidays_element_value->data.scalar.value) + 1, "%s", holidays_element_value->data.scalar.value);
+                    printf("%s\n", *api);
+                }
+            }
+        }
         if (key->type == YAML_SCALAR_NODE && strcmp((char *)key->data.scalar.value, "pipelines") == 0 && value->type == YAML_MAPPING_NODE) {
             size_t n_pipelines = value->data.mapping.pairs.top - value->data.mapping.pairs.start;
             *pipelines = calloc(n_pipelines, sizeof **pipelines);
@@ -194,8 +219,7 @@ struct tm get_due_day(struct tm due, int wd) {
     // print_date(due);
     //minute hour day month
     time_t now = time(NULL);
-    struct tm *local = localtime(&now);
-    // struct tm due_day = *localtime(&now);
+    // struct tm *local = localtime(&now);
     int dif;
     int i;
     for (i=0; i<4; i++) {
@@ -381,4 +405,83 @@ void print_date(struct tm date) {
     char dprint[30];
     strftime(dprint, 30, "%d %m %Y %H:%M", &date);
     printf("%s\n", dprint);
+}
+
+// Fetching holiday dates from nager
+
+struct holidays_buffer {
+    char *data;
+    size_t length;
+};
+
+size_t write_data (char *buffer, size_t size, size_t nmeb, void *userp) {
+    size_t bytes = size * nmeb;
+    struct holidays_buffer *response = userp;
+
+    char *new_data = realloc(response->data, response->length + bytes + 1);
+    if (new_data == NULL) {
+        return 0;
+    }
+    response->data = new_data;
+    memcpy(response->data + response->length, buffer, bytes);
+    response->length += bytes;
+    response->data[response->length] = '\0';
+
+    return bytes;
+}
+
+int get_holidays (char *api, const char *country, const int year) {
+    // struct tm *local = localtime(&now);
+    char years[2][5];
+    snprintf(years[0], 5, "%d", local->tm_year + 1900);
+    snprintf(years[1], 5, "%d", local->tm_year + 1901);
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        curl_global_cleanup();
+        return 1;
+    }
+
+    char url[128];
+    int len = snprintf(url, sizeof url,
+                       api,
+                       year, country);
+    if (len < 0 || (size_t)len >= sizeof url) {
+        fprintf(stderr, "URL too long\n");
+        curl_easy_cleanup(curl);
+        curl_global_cleanup();
+        return 1;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
+    struct holidays_buffer response = {0};
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        fprintf(stderr, "curl: %s\n", curl_easy_strerror(res));
+    } else {
+        putchar('\n');
+    }
+
+    cJSON *holidays = cJSON_Parse(response.data);
+    if (holidays != NULL && cJSON_IsArray(holidays)) {
+        int count = cJSON_GetArraySize(holidays);
+        for (int i = 0; i < count; i++) {
+            cJSON *holiday = cJSON_GetArrayItem(holidays, i);
+            cJSON *date = cJSON_GetObjectItem(holiday, "date");
+
+            if (cJSON_IsString(date)) {
+                printf("%s\n", date->valuestring);
+            }
+        }
+    }
+    cJSON_Delete(holidays);
+    free(response.data);
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+    return res != CURLE_OK;
 }

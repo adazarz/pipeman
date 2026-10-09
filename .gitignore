@@ -1,3 +1,4 @@
-backup.c
-test.c
-*.o
+holidays.o
+backup*
+network.o
+test*
