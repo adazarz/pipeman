@@ -7,8 +7,13 @@
 #include <ctype.h>
 #include <curl/curl.h>
 #include "cJSON.h"
+#include <stdarg.h>
 
-const struct tm *local = localtime(&now);
+#define MAX_PAIRS 7
+
+time_t now;
+struct tm *local;
+
 int due_in[4];
 
 struct list {
@@ -24,9 +29,10 @@ struct report {
     struct tm due;
     struct tm due_day;
     int due_in[4];
+    char due_text[64];
 };
 
-int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api);
+int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api, struct list *holidays, struct list *url_values);
 void print_pipeline(struct report *p);
 int get_date(char *date, struct report *report, struct tm *out_due_date);
 struct tm get_due_day(struct tm due, int wd);
@@ -40,14 +46,19 @@ int main(int argc, char *argv[]) {
     struct report *pipelines = NULL;
     int k;
     char *api = NULL;
+    struct list holidays = {0};
+    struct list url_values = {0};
+
+    now = time(NULL);
+    local = localtime(&now);
 
     get_yaml(reports, sizeof(reports));
-    if (get_reports_from_yaml(reports, &pipelines, &reports_count, &api) != 0) {
+    if (get_reports_from_yaml(reports, &pipelines, &reports_count, &api, &holidays, &url_values) != 0) {
         free_reports(pipelines, reports_count);
         return 1;
     }
 
-    printf("\nNumber of reports overall: %d\n", reports_count);
+    printf("\nNumber of reports overall: %zu\n", reports_count);
     for (k = 0; k < reports_count; k++) {
         print_pipeline(&pipelines[k]);
     }
@@ -72,6 +83,8 @@ int main(int argc, char *argv[]) {
 
     free_reports(pipelines, reports_count);
     free(api);
+    free_list(&holidays);
+    free_list(&url_values);
     return 0;
 }
 
@@ -127,7 +140,12 @@ int get_list(struct list *collection, yaml_document_t *document, yaml_node_t *fi
     collection->items = NULL;
     return 1;
 }
-int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api) {
+int add_argument(char *value, char *argument) {
+    length = strlen((char *)value) + 1;
+    url_values->items[url_values->count - 2] = malloc(length);
+    snprintf(url_values->items[url_values->count - 1], length, "%s", (char *)value);
+}
+int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *reports_count, char **api, struct list *holidays, struct list *url_values) {
     yaml_parser_t parser;
     yaml_document_t document;
     if (yaml_parser_initialize(&parser) == 0) {
@@ -143,6 +161,8 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
     yaml_parser_set_input_file(&parser, fp);
     yaml_parser_load(&parser, &document);
 
+    int length;
+    // url_values.items = malloc(1);
     yaml_node_t *root = yaml_document_get_root_node(&document);
     for (yaml_node_pair_t *pair = root->data.mapping.pairs.start; pair < root->data.mapping.pairs.top; pair++) {
         yaml_node_t *key = yaml_document_get_node(&document, pair->key);
@@ -153,7 +173,7 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                 yaml_node_t *holidays_element = yaml_document_get_node(&document, holidays_pair->key);
                 yaml_node_t *holidays_element_value = yaml_document_get_node(&document, holidays_pair->value);
                 printf("%s\n", holidays_element->data.scalar.value);
-                if (holidays_element_value->type == YAML_SCALAR_NODE && holidays_element->type == YAML_SCALAR_NODE && strcmp(holidays_element->data.scalar.value, "api") == 0) {
+                if (holidays_element_value->type == YAML_SCALAR_NODE && holidays_element->type == YAML_SCALAR_NODE && strcmp((char *)holidays_element->data.scalar.value, "api") == 0) {
                     *api = malloc(strlen((char *)holidays_element_value->data.scalar.value) + 1);
                     if (*api == NULL) {
                         printf("Error allocating memory\n");
@@ -161,8 +181,41 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                     }
                     snprintf(*api, strlen((char *)holidays_element_value->data.scalar.value) + 1, "%s", holidays_element_value->data.scalar.value);
                     printf("%s\n", *api);
+                } else if (holidays_element_value->type == YAML_SEQUENCE_NODE && holidays_element->type == YAML_SCALAR_NODE && strcmp((char *)holidays_element->data.scalar.value, "holidays") == 0) {
+                    if (get_list(holidays, &document, holidays_element_value) != 0) {
+                        return 1;
+                    }
+                } else if (holidays_element_value->type == YAML_SEQUENCE_NODE && holidays_element_type == YAML_SCALAR_NODE && strcmp((char *)holidays_element->data.scalar.value, "year") != 0) {
+                    url_values->count += 2;
+                    char **memory =  realloc(url_values->items, (url_values->count + 2) * sizeof(char *));
+                    if (memory) {
+                        url_values->items = memory;
+                    } else {
+                        printf("Error allocating memory\n");
+                        return 1;
+                    }
+                    if (add_argument(holidays_element->data.scalar.value, url_values->items[url_values->count - 2]) != 0) return 1;
+                    // length = strlen((char *)holidays_element->data.scalar.value) + 1;
+                    // url_values->items[url_values->count - 2] = malloc(length);
+                    // snprintf(url_values->items[url_values->count - 1], length, "%s", (char *)holidays_element->data.scalar.value);
+
+                    if (add_argument(holidays_element->data.scalar.value, url_values->items[url_values->count - 1]) != 0) return 1;
+                    // length = strlen((char *)holidays_element_value->data.scalar.value) + 1;
+                    // url_values->items[url_values->count - 1] = malloc(length);
+                    // snprintf(url_values->items[url_values->count], length, "%s", (char *)holidays_element_value->data.scalar.value);
                 }
             }
+            url_values->count += 2;
+
+            if (add_argument("year", url_values->items[url_values->count]) != 0) return 1;
+            if (add_argument((char *)(local->tm_year + 1900), url_values->items[url_values->count + 1]) != 0) return 1;
+
+            // url_values->items[url_values->count] = malloc(5);
+            // snprintf(url_values->items[url_values->count], 5, "%s", "year");
+            // url_values->items[url_values->count + 1] = malloc(5);
+            // snprintf(url_values->items[url_values->count + 1], 5, "%d", local->tm_year + 1900);
+            api = put_values_into_url(*api, url_values->items);
+            printf("%s\n", api);
         }
         if (key->type == YAML_SCALAR_NODE && strcmp((char *)key->data.scalar.value, "pipelines") == 0 && value->type == YAML_MAPPING_NODE) {
             size_t n_pipelines = value->data.mapping.pairs.top - value->data.mapping.pairs.start;
@@ -189,8 +242,9 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
                             } else if (strcmp(name, "script") == 0) {
                                 snprintf((*pipelines)[n].script, sizeof((*pipelines)[n].script), "%s", field_value->data.scalar.value);
                             } else if (strcmp(name, "due") == 0) {
+                                snprintf((*pipelines)[n].due_text, sizeof((*pipelines)[n].due_text), "%s", (char *)field_value->data.scalar.value);
                                 struct tm due;
-                                if (get_date(field_value->data.scalar.value, &(*pipelines)[n], &due) != 0) {
+                                if (get_date((char *)field_value->data.scalar.value, &(*pipelines)[n], &due) != 0) {
                                     return 1;
                                 }
                                 (*pipelines)[n].due = due;
@@ -218,7 +272,7 @@ int get_reports_from_yaml(char *reports, struct report **pipelines, size_t *repo
 struct tm get_due_day(struct tm due, int wd) {
     // print_date(due);
     //minute hour day month
-    time_t now = time(NULL);
+    //time_t now = time(NULL);
     // struct tm *local = localtime(&now);
     int dif;
     int i;
@@ -270,7 +324,7 @@ struct tm get_due_day(struct tm due, int wd) {
     time_t t_due = mktime(&due);
     // print_date(due);
     time_t t_local = mktime(local);
-    double sum = difftime(t_due, t_local);
+    // double sum = difftime(t_due, t_local);
     // printf("sum %.0f\n", sum);
 
     // Calculating for wd+n
@@ -337,12 +391,15 @@ int get_date(char *date, struct report *report, struct tm *out_due_date) {
                     due_date.tm_mday = (strcmp(buffer, "*") == 0) ? 0 : (int)strtol(buffer, NULL, 10); // 1-31
                     break;
                 case 3:
-                    if (buffer == 0) {
+                    if (strcmp(buffer, "*") == 0) {
+                        due_date.tm_mon = -1;
+                    } else if ((int)strtol(buffer, NULL, 10) == 0) {
                         printf("%s\n", "Unsupported month 0, use integers 1 through 12");
                         return 1;
+                    } else {
+                        due_date.tm_mon = (int)strtol(buffer, NULL, 10) - 1; //Accounting for c cron format incompatibility
                     }
-                    due_date.tm_mon = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10) - 1; //Accounting for c cron format incompatibility
-                    break;
+                        break;
                 case 4:
                     due_date.tm_wday = (strcmp(buffer, "*") == 0) ? -1 : (int)strtol(buffer, NULL, 10); // 0-6
                     break;
@@ -388,17 +445,18 @@ void print_list (struct list collection, char *name) {
     }
 }
 void print_pipeline(struct report *p) {
-    char due_print[20];
+    // char due_print[20];
     char due_day_print[20];
-    strftime(due_print, 20, "%M %H %d %m %w", &p->due);
-    change_minus_one_to_stars(due_print);
+    // strftime(due_print, 20, "%M %H %d %m %w", &p->due);
+    // change_minus_one_to_stars(due_print);
     strftime(due_day_print, 20, "%d.%m.%Y %H:%M", &p->due_day);
     printf("\nname: %s\n", p->name);
     print_list(p->output, "output");
     printf("script: %s\n", p->script);
     print_list(p->dependencies, "dependencies");
     print_list(p->input, "input");
-    printf("due: %s\n", due_print);
+    // printf("due: %s\n", due_print);
+    printf("due: %s\n", p->due_text);
     printf("due day: %s\n", due_day_print);
 }
 void print_date(struct tm date) {
@@ -409,14 +467,101 @@ void print_date(struct tm date) {
 
 // Fetching holiday dates from nager
 
-struct holidays_buffer {
+struct api_struct {
+    char *key;
+    char *value;
+};
+struct param {
+    const char *name;
+    const char *value;
+};
+struct response_buffer {
     char *data;
     size_t length;
 };
 
+static int append_to_buffer(char **buffer, size_t *length, const char *text, size_t text_length) {
+    char *updated = realloc(*buffer, *length + text_length + 1);
+    if (updated == NULL) {
+        return 1;
+    }
+    *buffer = updated;
+    memcpy(*buffer + *length, text, text_length);
+    *length += text_length;
+    (*buffer)[*length] = '\0';
+    return 0;
+}
+
+char *put_values_into_url(const char *url, ...) {
+    va_list args;
+    va_start(args, url);
+    struct param params[MAX_PAIRS];
+    char compare_buffer[32];
+    int n = 0;
+    const char *name;
+    while (n < MAX_PAIRS && (name = va_arg(args, const char *)) != NULL) {
+        const char *value = va_arg(args, const char *);
+        if (value == NULL) {
+            va_end(args);
+            return NULL;
+        }
+        params[n].name = name;
+        params[n].value = value;
+        n++;
+    }
+    va_end(args);
+
+    if (url == NULL) {
+        return NULL;
+    }
+
+    char *buffer = malloc(1);
+    if (buffer == NULL) {
+        return NULL;
+    }
+    buffer[0] = '\0';
+    size_t written = 0;
+    const char *src = url;
+    const char *opening;
+    while ((opening = strchr(src, '{')) != NULL) {
+        const char *closing = strchr(opening + 1, '}');
+        if (closing == NULL) {
+            free(buffer);
+            return NULL;
+        }
+        size_t name_len = (size_t)(closing - opening - 1);
+        if (name_len == 0 || name_len >= sizeof compare_buffer ||
+            append_to_buffer(&buffer, &written, src, (size_t)(opening - src)) != 0) {
+            free(buffer);
+            return NULL;
+        }
+
+        memcpy(compare_buffer, opening + 1, name_len);
+        compare_buffer[name_len] = '\0';
+        const char *value = NULL;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(params[i].name, compare_buffer) == 0) {
+                value = params[i].value;
+                break;
+            }
+        }
+        if (value == NULL || append_to_buffer(&buffer, &written, value, strlen(value)) != 0) {
+            free(buffer);
+            return NULL;
+        }
+        src = closing + 1;
+    }
+
+    if (append_to_buffer(&buffer, &written, src, strlen(src)) != 0) {
+        free(buffer);
+        return NULL;
+    }
+    return &buffer;
+
+}
 size_t write_data (char *buffer, size_t size, size_t nmeb, void *userp) {
     size_t bytes = size * nmeb;
-    struct holidays_buffer *response = userp;
+    struct response_buffer *response = userp;
 
     char *new_data = realloc(response->data, response->length + bytes + 1);
     if (new_data == NULL) {
@@ -431,10 +576,10 @@ size_t write_data (char *buffer, size_t size, size_t nmeb, void *userp) {
 }
 
 int get_holidays (char *api, const char *country, const int year) {
-    // struct tm *local = localtime(&now);
-    char years[2][5];
-    snprintf(years[0], 5, "%d", local->tm_year + 1900);
-    snprintf(years[1], 5, "%d", local->tm_year + 1901);
+    char year_value[12];
+    snprintf(year_value, sizeof year_value, "%d", year);
+    api = put_values_into_url(api, "year", year_value, "country", country, NULL);
+
     curl_global_init(CURL_GLOBAL_DEFAULT);
     CURL *curl = curl_easy_init();
     if (!curl) {
@@ -443,9 +588,7 @@ int get_holidays (char *api, const char *country, const int year) {
     }
 
     char url[128];
-    int len = snprintf(url, sizeof url,
-                       api,
-                       year, country);
+    int len = snprintf(url, sizeof url, api, year, country);
     if (len < 0 || (size_t)len >= sizeof url) {
         fprintf(stderr, "URL too long\n");
         curl_easy_cleanup(curl);
@@ -456,7 +599,7 @@ int get_holidays (char *api, const char *country, const int year) {
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_FAILONERROR, 1L);
-    struct holidays_buffer response = {0};
+    struct response_buffer response = {0};
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
 
@@ -483,5 +626,6 @@ int get_holidays (char *api, const char *country, const int year) {
     free(response.data);
     curl_easy_cleanup(curl);
     curl_global_cleanup();
+    free(api);
     return res != CURLE_OK;
 }

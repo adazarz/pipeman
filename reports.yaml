@@ -5,8 +5,9 @@ init:
 
 holidays:
   country: PL #ISO 3166-1 alpha-2
-  api: https://date.nager.at/api/v3/PublicHolidays/%d/%s # %d for year, %s for country
-  holidays:
+  year: #filled in automatically
+  api: https://date.nager.at/api/v3/PublicHolidays/{year}/{country} # %d for year, %s for country
+  holidays: [2026-11-11, 2026-12-24]
 
 pipelines:
 
@@ -18,7 +19,7 @@ pipelines:
       - ~/Desktop
     script: ~/list.exe
     dependencies: []
-    due: wd * * 3 * *
+    due: "wd * * 3 * *"
 
   do_something_else:
     input:
@@ -28,4 +29,4 @@ pipelines:
     script: ~/do_something_else.exe
     dependencies:
       - list_files
-    due: wd * 7 2 12 *
+    due: "wd * 7 2 12 *"
